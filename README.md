@@ -31,7 +31,17 @@ docker compose exec -T backend python -m scripts.seed_demo
 | analyst@xunguang.demo | Xunguang2026! | analyst |
 | viewer@xunguang.demo | Xunguang2026! | viewer |
 
-恰好frontend/backend/worker/db/redis五服务，全部有healthcheck和健康依赖；PostgreSQL16、Redis7分别命名卷，backend/worker共享JSON产物卷。worker每2秒刷新心跳，分别执行run和scenario两种Redis任务。ORM metadata首次建表，迁移目录为索引示例；后续结构变化需审查迁移。
+恰好frontend/backend/worker/db/redis五服务，全部有healthcheck和健康依赖；PostgreSQL16、Redis7分别命名卷，backend/worker共享JSON产物卷。worker每2秒刷新心跳，分别执行run和scenario两种Redis任务，并带`restart: unless-stopped`崩溃自愈。ORM metadata首次建表，启动时幂等补齐执行列（等价于`migrations/002_reliable_execution.sql`）；后续结构变化需审查迁移。
+
+## 队列可靠执行
+
+数据库是任务事实源，Redis只作唤醒器：丢消息、重复投递、执行者崩溃都由对账与fencing兜底，情景不会永久停在计算中。
+
+- **认领**：`queued`或`running且租约过期`的行才可被条件原子UPDATE认领，`attempt`代次+1并写入执行者租约；重复投递被认领守卫吸收，只完整求解一次。
+- **续约与接管**：求解期间执行者按`EXECUTOR_LEASE_SECONDS`周期续约；崩溃失联后租约到期，对账器（每`EXECUTOR_RECONCILE_INTERVAL_SECONDS`扫描）重投，新执行者超时接管。
+- **fencing发布**：完成/失败发布要求`id+attempt+running`匹配，状态、底稿（result）与审计在同一事务提交；超时接管后旧执行者迟到的结果因代次失配被丢弃（审计`*.fenced`），获批导出始终对应同一次完整求解。
+- **对账恢复**：`queued`超过`EXECUTOR_REQUEUE_AFTER_SECONDS`（落库未入队/队列丢消息）与`running`租约过期（执行者崩溃/求解后未发布）的行自动补投；创建时Redis不可用不再报错，落库后等待对账。已完成/已失败为终态，已有获批底稿不被触碰。
+- 页面在排队/计算中展示执行代次、执行者租约与接管提示；恢复与接管记入研究留痕（`*.recovered`/`*.fenced`）。
 
 ## 数据与一天剧本
 
@@ -81,6 +91,7 @@ backend/src/{models,schemas,services,controllers,routes,middlewares,utils,consta
 backend/src/{main.py,worker.py}
 backend/scripts/seed_demo.py
 backend/migrations/001_initial.sql
+backend/tests/test_execution.py（恢复与fencing验证：pytest backend/tests）
 frontend/src/{api,stores,types,components,hooks,pages,router,utils,constants}
 ```
 
@@ -96,6 +107,9 @@ AttributionSummary跨首页/结果/情景共用，CreditBars跨首页/结果共�
 | DB_PORT | 17716 | PostgreSQL宿主映射 |
 | JWT_SECRET | local-journey-credit-change-this-key | 本地演示值，部署前更换 |
 | SEED_DEMO | true | 启动自动seed |
+| EXECUTOR_LEASE_SECONDS | 30 | 执行者租约时长，崩溃后超时接管的等待上限 |
+| EXECUTOR_REQUEUE_AFTER_SECONDS | 10 | queued超过该时长视为丢消息，由对账器补投 |
+| EXECUTOR_RECONCILE_INTERVAL_SECONDS | 5 | worker对账扫描间隔 |
 
 本地Python3.11安装requirements，设置DATABASE_URL/REDIS_URL；`cd backend && uvicorn src.main:app --reload`，另起`python -m src.worker`。前端`npm install && npm run dev`，本地为`/api`配置后端代理。标准演示以Compose为准。
 
@@ -107,7 +121,7 @@ docker compose down -v --remove-orphans
 
 ## 已知边界
 
-合成冻结匿名路径，无上传或实际投放；仅可补备注，渠道配置当前只读。观察路径的一阶Markov及转NULL策略有偏差，未做因果识别、时间归因窗或高阶路径。LP无收益递减/协同/整数约束，不把指数解读为真实ROI。单worker无running自动恢复、事务outbox或分布式锁，中断需重提；登录限流仅进程内。首次建表不是完整迁移链；网络字体失效时回退。
+合成冻结匿名路径，无上传或实际投放；仅可补备注，渠道配置当前只读。观察路径的一阶Markov及转NULL策略有偏差，未做因果识别、时间归因窗或高阶路径。LP无收益递减/协同/整数约束，不把指数解读为真实ROI。队列丢消息、重复投递与执行者崩溃由对账+fencing自动恢复；多worker并发安全依赖数据库条件更新，Redis仍是易失唤醒器（丢失由对账兜底），登录限流仅进程内。首次建表不是完整迁移链；网络字体失效时回退。
 
 ## License
 

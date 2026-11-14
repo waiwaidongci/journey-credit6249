@@ -8,10 +8,11 @@ from . import models
 from .routes import auth,batches,channels,journeys,runs,scenarios,audits
 from .middlewares.errors import ErrorMiddleware
 from .middlewares.rate_limit import RateLimitMiddleware
-from .services.run_service import queue
+from .services.execution import ensure_schema,queue
 @asynccontextmanager
 async def lifespan(app):
     Base.metadata.create_all(engine)
+    ensure_schema(engine)
     if SEED_DEMO:
         try:
             from scripts.seed_demo import seed

@@ -16,4 +16,8 @@ class BudgetScenario(Base):
     owner:Mapped[str]
     reviewer:Mapped[str]=mapped_column(default="")
     review_note:Mapped[str]=mapped_column(default="")
+    attempt:Mapped[int]=mapped_column(default=0)
+    lease_owner:Mapped[str]=mapped_column(default="")
+    lease_expires_at:Mapped[float]=mapped_column(default=0.0)
     created_at:Mapped[str]=mapped_column(default=now)
+    updated_at:Mapped[str]=mapped_column(default=now)

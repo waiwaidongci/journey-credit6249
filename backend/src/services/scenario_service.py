@@ -1,10 +1,10 @@
-import csv,io
+import csv,io,logging
 from fastapi import HTTPException
 from ..models import BudgetScenario,AttributionRun
 from ..utils.serialize import record
 from .audit_service import log
 from .budget_algorithm import optimize_budget
-from .run_service import queue
+from .execution import enqueue,queue
 
 def list_scenarios(db):return [record(s) for s in db.query(BudgetScenario).order_by(BudgetScenario.id.desc())]
 def get_scenario(db,sid):
@@ -19,9 +19,8 @@ def create_scenario(db,data,user):
     except ValueError as e:raise HTTPException(422,str(e))
     row=BudgetScenario(**data.model_dump(),owner=user.name)
     db.add(row);db.flush();log(db,user.email,"scenario.enqueue",row.id);db.commit()
-    try:queue.rpush("journey:jobs","scenario:"+str(row.id))
-    except Exception:
-        row.status="failed";row.error="队列不可用，请重试";db.commit();raise HTTPException(503,row.error)
+    try:enqueue(queue,"scenario",row.id)
+    except Exception:logging.warning("scenario %s 入队失败，等待对账器补投",row.id,exc_info=True)
     return record(row)
 def review_scenario(db,sid,data,user):
     row=get_scenario(db,sid)
@@ -32,6 +31,8 @@ def review_scenario(db,sid,data,user):
 def export_scenario(db,sid):
     row=get_scenario(db,sid)
     if row.status!="completed" or row.review_status!="approved":raise HTTPException(403,"只有获批完成情景可以导出")
+    result=row.result or {}
+    if not result.get("allocations") or not result.get("input_hash"):raise HTTPException(409,"情景底稿尚未完整发布，请等待对账恢复")
     out=io.StringIO();w=csv.writer(out);w.writerow(['channel','allocation','unit_cost','capacity','spend','association_score','proxy_contribution','attribution_share','input_hash'])
-    for x in row.result['allocations']:w.writerow([x[k] for k in ['code','allocation','unit_cost','capacity','spend','association_score','proxy_contribution','share']]+[row.result['input_hash']])
+    for x in result['allocations']:w.writerow([x[k] for k in ['code','allocation','unit_cost','capacity','spend','association_score','proxy_contribution','share']]+[result['input_hash']])
     return out.getvalue()

@@ -11,4 +11,8 @@ class AttributionRun(Base):
     result:Mapped[dict]=mapped_column(JSON,default=dict)
     error:Mapped[str]=mapped_column(default="")
     owner:Mapped[str]
+    attempt:Mapped[int]=mapped_column(default=0)
+    lease_owner:Mapped[str]=mapped_column(default="")
+    lease_expires_at:Mapped[float]=mapped_column(default=0.0)
     created_at:Mapped[str]=mapped_column(default=now)
+    updated_at:Mapped[str]=mapped_column(default=now)
